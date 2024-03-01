@@ -8,6 +8,7 @@ import torch
 from torch._prims_common import DeviceLikeType
 from ..parameter import Parameter
 import torch.utils.hooks as hooks
+import inspect
 
 from torch import Tensor, device, dtype
 from typing import Union, Tuple, Any, Callable, Iterator, Set, Optional, overload, TypeVar, Mapping, Dict, List
@@ -51,6 +52,19 @@ r"""This tracks hooks common to all modules that are executed immediately before
 _global_buffer_registration_hooks: Dict[int, Callable] = OrderedDict()
 _global_module_registration_hooks: Dict[int, Callable] = OrderedDict()
 _global_parameter_registration_hooks: Dict[int, Callable] = OrderedDict()
+
+
+global_callsites = set()
+global_compile_callsites = set()
+
+def rank0_print(x, prefix=""):
+    if torch.distributed.is_initialized():
+        if torch.distributed.get_rank() != 0:
+            return
+    print(prefix + str(x))
+
+
+
 
 class _WrappedHook:
     def __init__(self, hook: Callable, module: Optional["Module"] = None):
@@ -1523,6 +1537,12 @@ class Module:
         return result
 
     def _wrapped_call_impl(self, *args, **kwargs):
+        if self.__class__.__name__.startswith("FSDP"):
+            callsites = [(x[1], x[3]) for x in inspect.stack() if 'test_fully_shard' in x[1] and x[3].startswith('test_')]
+            for callsite in callsites:
+                global_callsites.add(callsite)
+                if self._compiled_call_impl is not None:
+                    global_compile_callsites.add(callsite)
         if self._compiled_call_impl is not None:
             return self._compiled_call_impl(*args, **kwargs)  # type: ignore[misc]
         else:

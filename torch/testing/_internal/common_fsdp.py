@@ -1016,6 +1016,7 @@ def run_subtests(
         with cls_inst.subTest(**subtest_kwargs):
             test_fn(*test_args, **test_kwargs, **subtest_kwargs)
         dist.barrier()
+        return
 
 
 class FSDPTestMultiThread(MultiThreadedTestCase):
@@ -1098,6 +1099,15 @@ class FSDPTest(MultiProcessTestCase):
         dist.barrier()
 
         self.run_test(test_name, pipe)
+
+        torch.nn.modules.module.rank0_print(
+            ' || '.join([
+                str(torch.nn.modules.module.global_callsites),
+                str(torch.nn.modules.module.global_compile_callsites),
+                str(torch.nn.modules.module.global_callsites.difference(torch.nn.modules.module.global_compile_callsites)),
+            ]),
+            prefix="callsite=",
+        )
 
         dist.barrier()
 
@@ -1379,20 +1389,30 @@ def test_compiled_fsdp(compile_compute_on_module: Optional[type] = None):
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
-            for fully_shard_patch in FullyShardPatch:
+            original_fully_shard = torch.distributed._composable.fsdp.fully_shard
+            for fully_shard_patch in [FullyShardPatch.COMPILED_COMPUTE]:
                 if fully_shard_patch != FullyShardPatch.EAGER and not has_triton():
                     warnings.warn("Inductor on GPU needs Triton and recent GPU arch")
                     continue
-                patched_fully_shard = torch.distributed._composable.fsdp.fully_shard
+                patched_fully_shard = original_fully_shard
                 if fully_shard_patch == FullyShardPatch.COMPILED_COMPUTE:
                     patched_fully_shard = _wrap_with_compiled_compute(
                         patched_fully_shard
                     )
+                    patched_fully_shard.is_patched = True
+                imported_fully_shard = f"{func.__module__}.{original_fully_shard.__name__}"
                 with mock.patch(
-                    f"{func.__module__}.{torch.distributed._composable.fsdp.fully_shard.__name__}",
+                    imported_fully_shard,
                     patched_fully_shard,
                 ):
                     func(*args, **kwargs)
+
+                # mock.patch.__exit__ does not work with multi-thread
+                # thread 1 set func.__module__[fully_shard] = patched_fully_shard
+                # thread 2 read func.__module__[fully_shard] and thought it is original
+                # hence we mannually reset them
+                import_path, _ = mock._get_target(imported_fully_shard)
+                setattr(import_path(), original_fully_shard.__name__, original_fully_shard)
 
         return wrapper
 

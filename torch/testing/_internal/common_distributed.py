@@ -1036,6 +1036,14 @@ class MultiThreadedTestCase(TestCase):
 
         try:
             getattr(self, test_name)()
+            torch.nn.modules.module.rank0_print(
+                ' || '.join([
+                    str(torch.nn.modules.module.global_callsites),
+                    str(torch.nn.modules.module.global_compile_callsites),
+                    str(torch.nn.modules.module.global_callsites.difference(torch.nn.modules.module.global_compile_callsites)),
+                ]),
+                prefix="callsite=",
+            )
         except BaseException as ex:
             self.exception_queue.put((rank, sys.exc_info()))
             ProcessLocalGroup.exception_handle(ex)  # trigger _terminate event and awaken worker threads
