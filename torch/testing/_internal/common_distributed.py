@@ -1044,6 +1044,9 @@ class MultiThreadedTestCase(TestCase):
                 ]),
                 prefix="callsite=",
             )
+            torch.distributed.barrier()
+            torch.nn.modules.module.global_callsites = set()
+            torch.nn.modules.module.global_compile_callsites = set()
         except BaseException as ex:
             self.exception_queue.put((rank, sys.exc_info()))
             ProcessLocalGroup.exception_handle(ex)  # trigger _terminate event and awaken worker threads
