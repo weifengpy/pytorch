@@ -253,3 +253,35 @@ class CPUOffloadPolicy(OffloadPolicy):
     """
 
     pin_memory: bool = True
+
+
+@dataclass(eq=False, slots=True)
+class AllGatherInput:
+    r"""Describe one payload returned by an FSDP all-gather extension.
+
+    Return these among the all-gather inputs of ``fsdp_pre_all_gather``. FSDP
+    concatenates each rank's ``tensor`` along ``dim`` and passes the result to
+    ``fsdp_post_all_gather``, e.g. ``(2, F, D)`` with ``dim=1`` gathers to
+    ``(2, N * F, D)`` over ``N`` ranks. Plain tensor inputs are instead read as rows
+    of the padded sharded parameter, concatenated along its shard dim, and passed
+    viewed as ``(-1, *tensor.shape[1:])``. With several shard ranks and a nonzero
+    shard dim, they need its element count or its dims before that dim.
+
+    The number of inputs, and each record's element count and dtype, must stay
+    fixed across calls, and every rank must return the same shapes and dtypes.
+    Plain tensors may also become uint8 byte views of their outputs, which are
+    passed back in the outputs' dtype, or, for shard dim 0, shrink, leaving
+    unspecified data after the gathered prefix. Extensions own any padding: the
+    local shard is unpadded on ranks with a smaller shard, so per-row payloads
+    such as scales need padding too. When ``fsdp_pre_all_gather`` takes
+    ``outer_size``, FSDP requires every plain tensor of an unevenly sharded
+    parameter to have the padded sharded size, so return scales as records.
+
+    Attributes:
+        tensor (Tensor): Local payload, flattened with ``view(-1)``. Scalars count
+            as shape ``(1,)``.
+        dim (int): Dimension to concatenate along; may be negative.
+    """
+
+    tensor: torch.Tensor
+    dim: int = field(kw_only=True)
