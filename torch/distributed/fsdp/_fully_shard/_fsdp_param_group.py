@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple, TYPE_CHECKING
 from typing_extensions import TypeVarTuple, Unpack
@@ -62,6 +63,12 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger("torch.distributed.fsdp.fully_shard")
+
+# Kit patch (FSDP2_LESS_OVERLAP=1), for comparing FSDP2 with FlexShard on the same backward schedule: check the
+# reduce-scatter cap at every parameter group, so a module's later group waits for its earlier group's
+# reduce-scatter (as FlexShard's one pending reduce-grad per bucket does), and order backward prefetch
+# all-gathers after the current stream (as FlexShard's backward unshards are). Default off.
+_LESS_OVERLAP = os.environ.get("FSDP2_LESS_OVERLAP") == "1"
 
 _ModuleToHandleDict = dict[nn.Module, RemovableHandle]  # for state dict
 _GradInputs = TypeVarTuple("_GradInputs")
@@ -132,6 +139,10 @@ class FSDPCommContext:
             TrainingState.FORWARD,
             TrainingState.PRE_BACKWARD,
         ):
+            if _LESS_OVERLAP and training_state == TrainingState.PRE_BACKWARD:
+                self.all_gather_copy_in_stream.wait_stream(
+                    self.device_handle.current_stream()
+                )
             # Use separate streams for implicit prefetching
             return self.all_gather_copy_in_stream, self.all_gather_stream
         current_stream = self.device_handle.current_stream()
@@ -752,9 +763,9 @@ class FSDPParamGroup:
             max_input_buffers = self.comm_ctx.reduce_scatter_max_input_buffers
             states = self.comm_ctx.reduce_scatter_states
             if (
-                self._param_group_index == self._num_param_groups - 1
-                and len(states) >= max_input_buffers
-            ):
+                _LESS_OVERLAP
+                or self._param_group_index == self._num_param_groups - 1
+            ) and len(states) >= max_input_buffers:
                 with record_function(
                     f"FSDP::post_backward_rs_wait ({self._module_fqn})"
                 ):
